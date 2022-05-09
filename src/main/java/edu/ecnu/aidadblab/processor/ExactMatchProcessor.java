@@ -9,6 +9,7 @@ import edu.ecnu.aidadblab.data.model.Graph;
 import edu.ecnu.aidadblab.data.model.Match;
 import edu.ecnu.aidadblab.data.model.MatchGroup;
 import edu.ecnu.aidadblab.data.model.Vertex;
+import edu.ecnu.aidadblab.tool.GlobalData;
 import edu.ecnu.aidadblab.util.SpatialUtil;
 
 import java.util.ArrayList;
@@ -55,10 +56,12 @@ public class ExactMatchProcessor {
     }
 
     private List<Set<Match>> getExactMatchResult() {
+        long startTime = System.nanoTime();
         List<Set<Match>> matchResults = new ArrayList<>(queryGraphs.size());
         for (Graph queryGraph : queryGraphs) {
             matchResults.add(subgraphMatchingAlgorithm.match(dataGraph, queryGraph));
         }
+        GlobalData.ExactNonSpatialTime = (System.nanoTime() - startTime) / 1e6;
         return matchResults;
     }
 

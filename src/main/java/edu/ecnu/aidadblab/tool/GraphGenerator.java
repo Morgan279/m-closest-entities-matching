@@ -7,11 +7,11 @@ import edu.ecnu.aidadblab.constant.LabelConst;
 import edu.ecnu.aidadblab.constant.LocationComponent;
 import edu.ecnu.aidadblab.data.model.Graph;
 import edu.ecnu.aidadblab.data.model.Vertex;
-import io.netty.util.internal.ThreadLocalRandom;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ThreadLocalRandom;
 
 public class GraphGenerator {
 

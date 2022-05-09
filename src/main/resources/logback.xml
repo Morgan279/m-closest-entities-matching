@@ -1,9 +1,9 @@
 <configuration>
     <!--定义日志文件的存储地址 勿在 LogBack 的配置中使用相对路径-->
-    <property name="LOG_HOME" value="/home/wclong/experiment"/>
+    <property name="LOG_HOME" value="/root/workspace/mClosestEntitiesMatching/experiment"/>
 
     <appender name="FILE" class="ch.qos.logback.core.FileAppender">
-        <file>${LOG_HOME}/CaseStudy.log</file>
+        <file>${LOG_HOME}/prune2.log</file>
         <encoder>
             <pattern>%msg%n</pattern>
         </encoder>

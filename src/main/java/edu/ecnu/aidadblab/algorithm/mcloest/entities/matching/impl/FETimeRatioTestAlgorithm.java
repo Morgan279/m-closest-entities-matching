@@ -3,6 +3,7 @@ package edu.ecnu.aidadblab.algorithm.mcloest.entities.matching.impl;
 import cn.hutool.core.collection.CollUtil;
 import com.alibaba.fastjson.JSONObject;
 import edu.ecnu.aidadblab.algorithm.mcloest.entities.matching.MClosestEntitiesMatchingAlgorithm;
+import edu.ecnu.aidadblab.config.GlobalConfig;
 import edu.ecnu.aidadblab.constant.AngleType;
 import edu.ecnu.aidadblab.data.model.*;
 import edu.ecnu.aidadblab.index.arcforest.ArcForest;
@@ -10,12 +11,12 @@ import edu.ecnu.aidadblab.index.arctree.ArcTree;
 import edu.ecnu.aidadblab.index.arctree.ArcTreeLeafNode;
 import edu.ecnu.aidadblab.processor.FuzzyMatchProcessor;
 import edu.ecnu.aidadblab.tool.CircleScanHelper;
+import edu.ecnu.aidadblab.tool.GlobalData;
 import edu.ecnu.aidadblab.util.SpatialUtil;
 
 import java.util.*;
 
-public class FCircleScanAlgorithm implements MClosestEntitiesMatchingAlgorithm {
-
+public class FETimeRatioTestAlgorithm implements MClosestEntitiesMatchingAlgorithm {
     private double S;
 
     private double feasibleS;
@@ -34,10 +35,14 @@ public class FCircleScanAlgorithm implements MClosestEntitiesMatchingAlgorithm {
 
     @Override
     public MatchGroup query(Graph dataGraph, List<Graph> queryGraphs) {
+        GlobalConfig.ENABLE_INDEX = false;
+        long overallStartTime = System.nanoTime();
         QUERY_NUM = queryGraphs.size();
         fuzzyMatchProcessor = new FuzzyMatchProcessor(dataGraph, queryGraphs);
         MatchGroup feasibleGroup = fuzzyMatchProcessor.findFeasibleSolution();
         if (feasibleGroup.diameter == 0) {
+            double overallConsumingTime = (System.nanoTime() - overallStartTime) / 1e6;
+            GlobalData.FEtimeRatio = GlobalData.FENonSpatialTime / overallConsumingTime;
             return feasibleGroup;
         }
 
@@ -49,18 +54,20 @@ public class FCircleScanAlgorithm implements MClosestEntitiesMatchingAlgorithm {
         feasibleS = 2 / Math.sqrt(3) * feasibleGroup.diameter;
         this.arcForest = new ArcForest(vertexList.size());
 
+
         for (int i = 0; i < vertexList.size(); ++i) {
             MatchGroup matchGroup = exactCircleScan(vertexList.get(i), feasibleS, i);
             if (matchGroup != null) {
+                double overallConsumingTime = (System.nanoTime() - overallStartTime) / 1e6;
+                GlobalData.FEtimeRatio = GlobalData.FENonSpatialTime / overallConsumingTime;
                 return matchGroup;
             }
         }
 
-        //long startTime = System.currentTimeMillis();
         MatchGroup ans = findBestExactMatch();
-        //System.out.println("Arc search cost: " + (System.currentTimeMillis() - startTime));
+        double overallConsumingTime = (System.nanoTime() - overallStartTime) / 1e6;
+        GlobalData.FEtimeRatio = GlobalData.FENonSpatialTime / overallConsumingTime;
         return ans;
-        //return findBestExactMatch();
     }
 
     private MatchGroup findBestExactMatch() {
@@ -75,7 +82,11 @@ public class FCircleScanAlgorithm implements MClosestEntitiesMatchingAlgorithm {
             boolean validate = true;
 
             for (int i = 0; i < QUERY_NUM; ++i) {
-                if (!fuzzyMatchProcessor.checkExact(bestGroup.entityMap.get(i), i)) {
+                long startTime = System.nanoTime();
+                boolean eligible = fuzzyMatchProcessor.checkExact(bestGroup.entityMap.get(i), i);
+                long endTime = System.nanoTime();
+                GlobalData.FENonSpatialTime += (endTime - startTime) / 1e6;
+                if (!eligible) {
                     updateWhenMatchFailed(bestGroup.entityMap.get(i), i, arcTree, bestGroupArcTreeLeafNode);
                     validate = false;
                     break;

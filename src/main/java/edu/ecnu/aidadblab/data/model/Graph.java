@@ -24,12 +24,6 @@ public class Graph implements IGraph {
 
     public BPlusTree bPlusTree = new BPlusTree();
 
-    public Signature oneHopIndex;
-
-    public Graph(Signature oneHopIndex) {
-        this.oneHopIndex = oneHopIndex;
-    }
-
     public void constructIndex() {
         for (Vertex entityVertex : entityVertexes) {
             bloomIndex.put(entityVertex, getEntityVertexHashKeys(entityVertex));
@@ -48,7 +42,9 @@ public class Graph implements IGraph {
         long hashKey3 = 0;
         long hashKey4 = 0;
         long hashKey5 = 0;
-        for (Vertex neighbor : getNeighbors(entityVertex)) {
+        List<Vertex> neighbors = getNeighbors(entityVertex);
+        for (int i = 0, len = neighbors.size(); i < len; ++i) {
+            Vertex neighbor = neighbors.get(i);
             hashKey1 |= (1L << (Math.abs(HashUtil.rsHash(neighbor.label)) % 64));
             hashKey2 |= (1L << (Math.abs(HashUtil.jsHash(neighbor.label)) % 64));
             hashKey3 |= (1L << (Math.abs(HashUtil.apHash(neighbor.label)) % 64));
@@ -57,7 +53,7 @@ public class Graph implements IGraph {
         }
         hashKeys.add(hashKey1);
         hashKeys.add(hashKey2);
-        hashKeys.add(hashKey3);
+        //hashKeys.add(hashKey3);
 //        hashKeys.add(hashKey4);
 //        hashKeys.add(hashKey5);
         return hashKeys;

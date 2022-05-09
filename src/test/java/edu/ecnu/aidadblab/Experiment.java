@@ -32,4 +32,10 @@ public class Experiment {
     public void effective() {
         experimentExecutor.effective();
     }
+
+
+    @Test
+    public void test() {
+        experimentExecutor.arcScaleableTest();
+    }
 }

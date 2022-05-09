@@ -7,13 +7,14 @@ import edu.ecnu.aidadblab.constant.AngleType;
 import edu.ecnu.aidadblab.data.model.*;
 import edu.ecnu.aidadblab.processor.ExactMatchProcessor;
 import edu.ecnu.aidadblab.tool.CircleScanHelper;
+import edu.ecnu.aidadblab.tool.GlobalData;
 import edu.ecnu.aidadblab.util.SpatialUtil;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.*;
 
 @Slf4j
-public class ExactScanAlgorithm implements MClosestEntitiesMatchingAlgorithm {
+public class ExactTimeRatioTestAlgorithm implements MClosestEntitiesMatchingAlgorithm {
 
     private double S;
 
@@ -31,9 +32,10 @@ public class ExactScanAlgorithm implements MClosestEntitiesMatchingAlgorithm {
 
     @Override
     public MatchGroup query(Graph dataGraph, List<Graph> queryGraphs) {
+        long overallStartTime = System.nanoTime();
         ExactMatchProcessor exactMatchProcessor = new ExactMatchProcessor(dataGraph, queryGraphs, new VC());
+        double nonSpatialLayerCostTime = GlobalData.ExactNonSpatialTime;
         List<Set<Vertex>> entityVertexList = exactMatchProcessor.candidateDataEntityVertexes;
-
         locationMap = exactMatchProcessor.getLocationMap(entityVertexList);
         QUERY_NUM = queryGraphs.size();
         vertexList = new ArrayList<>();
@@ -41,6 +43,8 @@ public class ExactScanAlgorithm implements MClosestEntitiesMatchingAlgorithm {
 
         MatchGroup feasibleGroup = exactMatchProcessor.findFeasibleSolution();
         if (feasibleGroup.diameter == 0) {
+            double overallConsumingTime = (System.nanoTime() - overallStartTime) / 1e6;
+            GlobalData.ExactTimeRatio = nonSpatialLayerCostTime / overallConsumingTime;
             return feasibleGroup;
         }
 
@@ -81,7 +85,9 @@ public class ExactScanAlgorithm implements MClosestEntitiesMatchingAlgorithm {
         }
 
         exactSearch();
-        
+
+        double overallConsumingTime = (System.nanoTime() - overallStartTime) / 1e6;
+        GlobalData.ExactTimeRatio = nonSpatialLayerCostTime / overallConsumingTime;
         return new MatchGroup(matchVertex, S);
     }
 

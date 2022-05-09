@@ -85,9 +85,6 @@ public class VC implements SubgraphMatchingAlgorithm {
         Vertex u2 = pivotMap.get(u);
         PivotPair pivotPair = new PivotPair(u2, u);
         List<Vertex> unmatchedNeighbors = Optional.ofNullable(BI.getNeighbors(pivotPair, curMatch.get(u2))).orElse(Collections.emptyList());
-//        if (BI.getNeighbors(pivotPair, curMatch.get(u2)) == null) {
-//            System.out.println("true");
-//        }
 
         for (Vertex v : unmatchedNeighbors) {
             if (!visitedGVertex.contains(v) && validate(curMatch, v, matchingOrder, level, u2)) {
@@ -180,11 +177,6 @@ public class VC implements SubgraphMatchingAlgorithm {
                         }
                         X.addAll(Y);
                         if (Y.isEmpty() || X.size() < j) {
-                            Console.log("query graph: {}", queryGraph);
-                            System.out.println(this.queryGraph.adjList.size());
-                            Console.log("X:{} Y:{} j:{} ", X, Y, j);
-                            Console.log("v: {}, N(v): {}", v, dataGraph.getNeighbors(v));
-                            Console.log("uPrime.C : {}", candidateMap.get(u2));
                             it.remove();
                             validate = false;
                             break;
@@ -336,7 +328,6 @@ public class VC implements SubgraphMatchingAlgorithm {
             if (coreValueMap.get(u) >= 2) VC.add(u);
             else VNC.add(u);
         }
-        //Console.log("VC: {} VNC: {}", VC.size(), VNC.size());
 
         Set<Vertex> prioritySet = VC.isEmpty() ? VNC : VC;
         Vertex uStart = null;
@@ -371,7 +362,6 @@ public class VC implements SubgraphMatchingAlgorithm {
                 }
             }
             matchingOrder[cnt++] = uStart;
-            //Console.log("matching order[{}] = {}", cnt - 1, uStart);
             UN.remove(uStart);
             addPivot(uStart, UN, matchingOrder, weightMap, minWeightMap);
         }

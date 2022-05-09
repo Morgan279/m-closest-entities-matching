@@ -1,30 +1,38 @@
 package edu.ecnu.aidadblab.tool;
 
+import cn.hutool.core.lang.Assert;
 import cn.hutool.core.lang.Console;
+import cn.hutool.core.util.RandomUtil;
 import com.alibaba.fastjson.JSONObject;
 import edu.ecnu.aidadblab.algorithm.mcloest.entities.matching.MClosestEntitiesMatchingAlgorithm;
-import edu.ecnu.aidadblab.algorithm.mcloest.entities.matching.impl.ExactEnumAlgorithm;
-import edu.ecnu.aidadblab.algorithm.mcloest.entities.matching.impl.ExactScanAlgorithm;
-import edu.ecnu.aidadblab.algorithm.mcloest.entities.matching.impl.F2EScanAlgorithm;
-import edu.ecnu.aidadblab.algorithm.mcloest.entities.matching.impl.IF2EScanAlgorithm;
+import edu.ecnu.aidadblab.algorithm.mcloest.entities.matching.impl.*;
 import edu.ecnu.aidadblab.algorithm.subgraph.matching.SubgraphMatchingAlgorithm;
 import edu.ecnu.aidadblab.algorithm.subgraph.matching.imlp.VC;
 import edu.ecnu.aidadblab.config.GlobalConfig;
 import edu.ecnu.aidadblab.constant.Dataset;
+import edu.ecnu.aidadblab.constant.FuzzyLevel;
 import edu.ecnu.aidadblab.constant.IndexType;
 import edu.ecnu.aidadblab.constant.LabelConst;
 import edu.ecnu.aidadblab.data.model.Graph;
 import edu.ecnu.aidadblab.data.model.MatchGroup;
 import edu.ecnu.aidadblab.data.model.Vertex;
 import edu.ecnu.aidadblab.importer.YelpImporter;
+import edu.ecnu.aidadblab.index.arcforest.ArcForest;
+import edu.ecnu.aidadblab.index.arctree.ArcTree;
+import edu.ecnu.aidadblab.index.arctree.ArcTreeLeafNode;
 import edu.ecnu.aidadblab.processor.ExactMatchProcessor;
-import io.netty.util.internal.ThreadLocalRandom;
+import edu.ecnu.aidadblab.processor.FuzzyMatchProcessor;
+import lombok.AllArgsConstructor;
+import lombok.Getter;
+import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import org.openjdk.jol.info.GraphLayout;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -40,7 +48,9 @@ public class ExperimentExecutor {
 
     double currentDataGraphSize = dataGraphSizes[0];
 
-    MClosestEntitiesMatchingAlgorithm timeRatioStatisticsAlgorithm = new ExactScanAlgorithm();
+    private final MClosestEntitiesMatchingAlgorithm timeRatioStatisticsAlgorithm = new ExactTimeRatioTestAlgorithm();
+
+    private final MClosestEntitiesMatchingAlgorithm FETimeRatioStatisticsAlgorithm = new FETimeRatioTestAlgorithm();
 
     private final MClosestEntitiesMatchingAlgorithm indexTestAlgorithm = new IF2EScanAlgorithm();
 
@@ -67,17 +77,167 @@ public class ExperimentExecutor {
 
     }
 
+    public void intermediateResultSizeTest() {
+        //for building index
+        GlobalConfig.ENABLE_INDEX = true;
+        GlobalConfig.MAX_READ_LINE = (int) 1e6;
+        ExperimentDataset.init();
+        testAlgorithms = new ArrayList<>();
+        testAlgorithms.add(new IF2EScanAlgorithm());
+        testAlgorithms.add(new NoArcFCircleScanAlgorithm());
+        final int[] queryGraphSizes = {4, 6, 8, 10, 12, 14, 16};
+        for (int queryGraphSize : queryGraphSizes) {
+            GraphGenerator.queryGraphSize = queryGraphSize;
+
+            this.switchYelpDataSet();
+            this.conductIntermediateResultSizeTest();
+
+            log.info("switching FS dataset");
+            this.switchFoursquareDataSet();
+            this.conductIntermediateResultSizeTest();
+
+            log.info("switching WD dataset");
+            this.switchWikiDataSet();
+            this.conductIntermediateResultSizeTest();
+
+            log.info("switching GW dataset");
+            this.switchGowallaDataSet();
+            this.conductIntermediateResultSizeTest();
+
+            log.info("switching BK dataset");
+            this.switchBrightkiteDataSet();
+            this.conductIntermediateResultSizeTest();
+        }
+
+    }
+
+    public void scaleableTest() {
+        GlobalConfig.SCALEABLE_TEST = true;
+        GlobalConfig.MAX_READ_LINE = (int) 1e6;
+        ExperimentDataset.init();
+        testAlgorithms = new ArrayList<>();
+        testAlgorithms.add(new IF2EScanAlgorithm());
+        testAlgorithms.add(new NoArcFCircleScanAlgorithm());
+        testAlgorithms.add(new RepeatFCircleScanAlgorithm());
+        GraphGenerator.queryGraphSize = 16;
+        final int[] queryGraphSizes = {6, 7, 8, 9, 10};
+        for (int queryGraphSize : queryGraphSizes) {
+
+            this.switchYelpDataSet();
+            this.conductScaleableTest();
+
+            log.info("switching FS dataset");
+            this.switchFoursquareDataSet();
+            this.conductScaleableTest();
+
+            log.info("switching WD dataset");
+            this.switchWikiDataSet();
+            this.conductScaleableTest();
+
+            log.info("switching GW dataset");
+            this.switchGowallaDataSet();
+            this.conductScaleableTest();
+
+            log.info("switching BK dataset");
+            this.switchBrightkiteDataSet();
+            this.conductScaleableTest();
+        }
+    }
+
+    private void conductScaleableTest() {
+        int totalExactSize = 0;
+        int totalFuzzySize = 0;
+        int[] totalCost = new int[testAlgorithms.size()];
+        for (int i = 0; i < testAlgorithms.size(); ++i) {
+            totalCost[i] = 0;
+        }
+
+        final int queryGraphCountPerQuery = GraphGenerator.queryGraphCount;
+        dataGraph.constructIndex();
+        for (int i = 0; i < EXPERIMENT_TIMES; ++i) {
+            this.queryGraphs = GraphGenerator.generateRandomQueryGraphWithSkip(dataGraph, i * queryGraphCountPerQuery);
+            ExactMatchProcessor exactMatchProcessor = new ExactMatchProcessor(dataGraph, queryGraphs, new VC());
+            totalExactSize += exactMatchProcessor.candidateDataEntityVertexes.stream()
+                    .map(Set::size)
+                    .reduce(Integer::sum)
+                    .orElse(0);
+
+            FuzzyMatchProcessor fuzzyMatchProcessor = new FuzzyMatchProcessor(dataGraph, queryGraphs);
+            totalFuzzySize += fuzzyMatchProcessor.getFuzzyMatchIntermediate().candidateDataEntityVertexes.stream()
+                    .map(List::size)
+                    .reduce(Integer::sum)
+                    .orElse(0);
+
+            Console.log("{} round size: {}-{} {}-{}", i + 1, "exact", totalExactSize, "fuzzy", totalFuzzySize);
+            for (int j = 0; j < testAlgorithms.size(); ++j) {
+                MClosestEntitiesMatchingAlgorithm algorithm = testAlgorithms.get(j);
+                long startTime = System.currentTimeMillis();
+                algorithm.query(dataGraph, queryGraphs);
+                long cost = System.currentTimeMillis() - startTime;
+                Console.log("{} {} round cost: {}", algorithm.getClass().getSimpleName(), i + 1, cost);
+                totalCost[j] += cost;
+            }
+        }
+
+        for (int i = 0; i < testAlgorithms.size(); ++i) {
+            log.info("{}:{}", testAlgorithms.get(i).getClass().getSimpleName(), Math.round(totalCost[i] / (double) EXPERIMENT_TIMES));
+        }
+        log.info("{}:{}-{}", GraphGenerator.queryGraphSize, totalExactSize, totalFuzzySize);
+    }
+
+    private void conductIntermediateResultSizeTest() {
+        int[] totalSizes = {0, 0, 0, 0};
+        final int queryGraphCountPerQuery = GraphGenerator.queryGraphCount;
+        for (int i = 0; i < EXPERIMENT_TIMES; ++i) {
+            this.queryGraphs = GraphGenerator.generateRandomQueryGraphWithSkip(dataGraph, i * queryGraphCountPerQuery);
+            ExactMatchProcessor exactMatchProcessor = new ExactMatchProcessor(dataGraph, queryGraphs, new VC());
+            totalSizes[0] += exactMatchProcessor.candidateDataEntityVertexes.stream()
+                    .map(Set::size)
+                    .reduce(Integer::sum)
+                    .orElse(0);
+
+            GlobalConfig.ENABLE_INDEX = false;
+            FuzzyMatchProcessor fuzzyMatchProcessor = new FuzzyMatchProcessor(dataGraph, queryGraphs);
+            totalSizes[1] += fuzzyMatchProcessor.getFuzzyMatchIntermediate().candidateDataEntityVertexes.stream()
+                    .map(List::size)
+                    .reduce(Integer::sum)
+                    .orElse(0);
+
+            GlobalConfig.ENABLE_INDEX = true;
+            GlobalConfig.INDEX_TYPE = IndexType.TALE;
+            fuzzyMatchProcessor = new FuzzyMatchProcessor(dataGraph, queryGraphs);
+            totalSizes[2] += fuzzyMatchProcessor.getFuzzyMatchIntermediate().candidateDataEntityVertexes.stream()
+                    .map(List::size)
+                    .reduce(Integer::sum)
+                    .orElse(0);
+
+            GlobalConfig.INDEX_TYPE = IndexType.BLOOM;
+            fuzzyMatchProcessor = new FuzzyMatchProcessor(dataGraph, queryGraphs);
+            totalSizes[3] += fuzzyMatchProcessor.getFuzzyMatchIntermediate().candidateDataEntityVertexes.stream()
+                    .map(List::size)
+                    .reduce(Integer::sum)
+                    .orElse(0);
+        }
+        int[] sizes = new int[4];
+        for (int i = 0; i < 4; ++i) {
+            sizes[i] = totalSizes[i] / EXPERIMENT_TIMES;
+        }
+        log.info("{}-{}-{}-{}-{}", GraphGenerator.queryGraphSize, sizes[0], sizes[1], sizes[2], sizes[3]);
+    }
+
     public void efficientTestVariedM() {
         //for building index
         GlobalConfig.ENABLE_INDEX = true;
         GlobalConfig.MAX_READ_LINE = (int) 1e6;
         ExperimentDataset.init();
 
-        testAlgorithms = new ArrayList<>(4);
+        testAlgorithms = new ArrayList<>();
         testAlgorithms.add(new ExactEnumAlgorithm());
         testAlgorithms.add(new ExactScanAlgorithm());
         testAlgorithms.add(new F2EScanAlgorithm());
         testAlgorithms.add(new IF2EScanAlgorithm());
+        testAlgorithms.add(new NoArcFCircleScanAlgorithm());
+        testAlgorithms.add(new RepeatFCircleScanAlgorithm());
         int[] variedSize = {8, 16};
 
         for (int queryGraphSize : variedSize) {
@@ -107,17 +267,19 @@ public class ExperimentExecutor {
 
     }
 
-    public void efficientTest() {
+    public void efficientTestVariedQueryGraphCount() {
         //for building index
         GlobalConfig.ENABLE_INDEX = true;
         GlobalConfig.MAX_READ_LINE = (int) 1e6;
         ExperimentDataset.init();
 
-        testAlgorithms = new ArrayList<>(4);
-        testAlgorithms.add(new ExactEnumAlgorithm());
-        testAlgorithms.add(new ExactScanAlgorithm());
+        testAlgorithms = new ArrayList<>();
+//        testAlgorithms.add(new ExactEnumAlgorithm());
+//        testAlgorithms.add(new ExactScanAlgorithm());
         testAlgorithms.add(new F2EScanAlgorithm());
         testAlgorithms.add(new IF2EScanAlgorithm());
+        testAlgorithms.add(new NoArcFCircleScanAlgorithm());
+        //testAlgorithms.add(new RepeatFCircleScanAlgorithm());
 
         int[] variedQueryGraphCount = {3, 6};
 
@@ -158,6 +320,8 @@ public class ExperimentExecutor {
         testAlgorithms.add(new ExactScanAlgorithm());
         testAlgorithms.add(new F2EScanAlgorithm());
         testAlgorithms.add(new IF2EScanAlgorithm());
+        testAlgorithms.add(new NoArcFCircleScanAlgorithm());
+        testAlgorithms.add(new RepeatFCircleScanAlgorithm());
 
         final int[] queryGraphSizes = {8, 16};
         final int[] queryGraphCounts = {3, 6};
@@ -185,7 +349,7 @@ public class ExperimentExecutor {
 
     public void timeRatioStatisticsWithQueryNodesVaried() {
         GlobalConfig.TIME_RATIO_TEST = true;
-        GlobalConfig.MAX_READ_LINE = (int) 1e5;
+        GlobalConfig.MAX_READ_LINE = (int) 1e6;
         GraphGenerator.queryGraphCount = 6;
         ExperimentDataset.init();
 
@@ -247,29 +411,41 @@ public class ExperimentExecutor {
     }
 
     private void conductTimeRatioStatisticsWithQueryNodesVaried() {
-        double totalTimeRatio = 0;
+        double ExactTotalTimeRatio = 0;
+        double FETotalTimeRatio = 0;
         final int queryGraphCountPerQuery = GraphGenerator.queryGraphCount;
         for (int i = 0; i < EXPERIMENT_TIMES; ++i) {
             this.queryGraphs = GraphGenerator.generateRandomQueryGraphWithSkip(dataGraph, i * queryGraphCountPerQuery);
             timeRatioStatisticsAlgorithm.query(dataGraph, queryGraphs);
-            double radio = GlobalData.timeRatio;
-            totalTimeRatio += radio;
-            Console.log("{} round ratio: {}", i + 1, radio);
+            double radio = GlobalData.ExactTimeRatio;
+            ExactTotalTimeRatio += radio;
+            Console.log("{} round exact ratio: {}", i + 1, radio);
+            FETimeRatioStatisticsAlgorithm.query(dataGraph, queryGraphs);
+            radio = GlobalData.FEtimeRatio;
+            FETotalTimeRatio += radio;
+            Console.log("{} round fuzzy-exact ratio: {}", i + 1, radio);
         }
-        log.info("{} {}", GraphGenerator.queryGraphSize, totalTimeRatio / (double) EXPERIMENT_TIMES);
+        log.info("{} {}", GraphGenerator.queryGraphSize, ExactTotalTimeRatio / (double) EXPERIMENT_TIMES);
+        log.info("{} {}", GraphGenerator.queryGraphSize, FETotalTimeRatio / (double) EXPERIMENT_TIMES);
     }
 
     private void conductTimeRatioStatisticsWithDataGraphSizeVaried() {
-        double totalTimeRatio = 0;
+        double ExactTotalTimeRatio = 0;
+        double FETotalTimeRatio = 0;
         final int queryGraphCountPerQuery = GraphGenerator.queryGraphCount;
         for (int i = 0; i < EXPERIMENT_TIMES; ++i) {
             this.queryGraphs = GraphGenerator.generateRandomQueryGraphWithSkip(dataGraph, i * queryGraphCountPerQuery);
             timeRatioStatisticsAlgorithm.query(dataGraph, queryGraphs);
-            double radio = GlobalData.timeRatio;
-            totalTimeRatio += GlobalData.timeRatio;
+            double radio = GlobalData.ExactTimeRatio;
+            ExactTotalTimeRatio += GlobalData.ExactTimeRatio;
             Console.log("{} round ratio: {}", i + 1, radio);
+            FETimeRatioStatisticsAlgorithm.query(dataGraph, queryGraphs);
+            radio = GlobalData.FEtimeRatio;
+            FETotalTimeRatio += radio;
+            Console.log("{} round fuzzy-exact ratio: {}", i + 1, radio);
         }
-        log.info("$10^{}$ {}", (String.valueOf(GlobalConfig.MAX_READ_LINE)).length() - 1, totalTimeRatio / (double) EXPERIMENT_TIMES);
+        log.info("$10^{}$ {}", (String.valueOf(GlobalConfig.MAX_READ_LINE)).length() - 1, ExactTotalTimeRatio / (double) EXPERIMENT_TIMES);
+        log.info("$10^{}$ {}", (String.valueOf(GlobalConfig.MAX_READ_LINE)).length() - 1, FETotalTimeRatio / (double) EXPERIMENT_TIMES);
     }
 
 
@@ -409,29 +585,10 @@ public class ExperimentExecutor {
 
     private void conductCaseStudy() {
         final int m = GraphGenerator.queryGraphCount;
-        int skip = 0;
-
-
         ExactMatchProcessor exactMatchProcessor = new ExactMatchProcessor(dataGraph, queryGraphs, vc);
-
-//        do {
-//            queryGraphs = GraphGenerator.generateRandomQueryGraphWithSkip(dataGraph, skip++);
-//            exactMatchProcess = new ExactMatchProcess(dataGraph, queryGraphs, vc);
-//        } while (checkIsSpecificAnswer(exactMatchProcess.candidateDataEntityVertexes));
-
-//        for (Set<Vertex> exacts : exactMatchProcess.candidateDataEntityVertexes) {
-//            System.out.println(exacts.size());
-//            combinations *= exacts.size();
-//        }
 
         List<List<Vertex>> candidates = exactMatchProcessor.candidateDataEntityVertexes.stream().
                 map(ArrayList::new).collect(Collectors.toList());
-//        for (int i = 0; i < m; ++i) {
-//            log.info("Q{}:", i + 1);
-//            for (Vertex vertex : candidates.get(i)) {
-//                log.info("{}", dataGraph.locationMap.get(vertex));
-//            }
-//        }
         List<Vertex> selectedVertexes = new ArrayList<>(m);
         double randomSelectTotalDiameter = 0;
         for (int i = 0; i < 100; ++i) {
@@ -464,22 +621,15 @@ public class ExperimentExecutor {
         Vertex city = new Vertex("Gilbert");
         Vertex state = new Vertex("AZ");
         Vertex isOpen = new Vertex("1");
-        //Vertex byAppointmentOnly = new Vertex("ByAppointmentOnly");
 
         queryGraph.addVertex(bank);
-        //queryGraph.addVertex(city);
-        //queryGraph.addVertex(state);
         queryGraph.addVertex(location);
         queryGraph.addVertex(category);
         queryGraph.addVertex(isOpen);
-        //queryGraph.addVertex(byAppointmentOnly);
 
         queryGraph.addEdge(bank, location);
         queryGraph.addEdge(bank, category);
         queryGraph.addEdge(bank, isOpen);
-        //queryGraph.addEdge(bank, city);
-        //queryGraph.addEdge(bank, state);
-        //queryGraph.addEdge(bank, byAppointmentOnly);
 
         return queryGraph;
     }
@@ -489,14 +639,10 @@ public class ExperimentExecutor {
         Vertex hotel = new Vertex(LabelConst.ENTITY_LABEL);
         Vertex location = new Vertex(new JSONObject().toJSONString(), LabelConst.LOCATION_LABEL);
         Vertex category = new Vertex("Hotels & Travel");
-        //Vertex city = new Vertex("Gilbert");
-        //Vertex state = new Vertex("AZ");
         Vertex stars = new Vertex("5.0");
         Vertex isOpen = new Vertex("1");
 
         queryGraph.addVertex(hotel);
-        //queryGraph.addVertex(city);
-        //queryGraph.addVertex(state);
         queryGraph.addVertex(location);
         queryGraph.addVertex(category);
         queryGraph.addVertex(category);
@@ -507,8 +653,6 @@ public class ExperimentExecutor {
         queryGraph.addEdge(hotel, category);
         queryGraph.addEdge(hotel, stars);
         queryGraph.addEdge(hotel, isOpen);
-        //queryGraph.addEdge(hotel, city);
-        //queryGraph.addEdge(hotel, state);
 
         return queryGraph;
     }
@@ -519,39 +663,167 @@ public class ExperimentExecutor {
         Vertex location = new Vertex(new JSONObject().toJSONString(), LabelConst.LOCATION_LABEL);
         Vertex category = new Vertex("Restaurants");
         Vertex category2 = new Vertex("Shopping");
-        //Vertex city = new Vertex("Gilbert");
-        //Vertex state = new Vertex("AZ");
         Vertex stars = new Vertex("5.0");
         Vertex isOpen = new Vertex("1");
-        //Vertex businessAcceptsCreditCards = new Vertex("BusinessAcceptsCreditCards");
 
         queryGraph.addVertex(restaurant);
-        //queryGraph.addVertex(city);
-        //queryGraph.addVertex(state);
         queryGraph.addVertex(location);
         queryGraph.addVertex(category);
         queryGraph.addVertex(stars);
         queryGraph.addVertex(isOpen);
         queryGraph.addVertex(category2);
-        //queryGraph.addVertex(businessAcceptsCreditCards);
 
         queryGraph.addEdge(restaurant, location);
         queryGraph.addEdge(restaurant, category);
         queryGraph.addEdge(restaurant, stars);
         queryGraph.addEdge(restaurant, isOpen);
         queryGraph.addEdge(restaurant, category2);
-        //queryGraph.addEdge(restaurant, city);
-        //queryGraph.addEdge(restaurant, state);
-        //queryGraph.addEdge(restaurant, businessAcceptsCreditCards);
 
         return queryGraph;
     }
 
-    private boolean checkIsSpecificAnswer(List<Set<Vertex>> candidates) {
-        for (Set<Vertex> candidate : candidates) {
-            if (candidate.size() < 3) return true;
+    public void fuzzyLevelTest() {
+        GlobalConfig.ENABLE_INDEX = false;
+        GlobalConfig.MAX_READ_LINE = (int) 1e6;
+        ExperimentDataset.init();
+        GraphGenerator.queryGraphCount = 3;
+        GraphGenerator.queryGraphSize = 20;
+
+        this.switchYelpDataSet();
+        this.conductFuzzyLevelTest();
+
+        log.info("switching FS dataset");
+        this.switchFoursquareDataSet();
+        this.conductFuzzyLevelTest();
+
+        log.info("switching WD dataset");
+        this.switchWikiDataSet();
+        this.conductFuzzyLevelTest();
+
+        log.info("switching GW dataset");
+        this.switchGowallaDataSet();
+        this.conductFuzzyLevelTest();
+
+        log.info("switching BK dataset");
+        this.switchBrightkiteDataSet();
+        this.conductFuzzyLevelTest();
+    }
+
+    public void conductFuzzyLevelTest() {
+        MClosestEntitiesMatchingAlgorithm algorithm = new F2EScanAlgorithm();
+        String[] fuzzyLevels = {FuzzyLevel.ONE_HOP, FuzzyLevel.EGO_NETWORK, FuzzyLevel.TWO_HOP};
+        //warmup
+        algorithm.query(dataGraph, GraphGenerator.generateRandomQueryGraph(dataGraph));
+        for (String fuzzyLevel : fuzzyLevels) {
+            GlobalConfig.FUZZY_LEVEL = fuzzyLevel;
+            long totalCost = 0;
+            for (int i = 1; i <= EXPERIMENT_TIMES; ++i) {
+                List<Graph> currentRoundQueryGraphs = GraphGenerator.generateRandomQueryGraphWithSkip(dataGraph, i * GraphGenerator.queryGraphCount);
+                long startTime = System.currentTimeMillis();
+                algorithm.query(dataGraph, currentRoundQueryGraphs);
+                long cost = System.currentTimeMillis() - startTime;
+                cost = GlobalData.PruneNum;
+                Console.log("{} {} round cost: {}", fuzzyLevel, i, cost);
+                totalCost += cost;
+            }
+            log.info("{}:{}", fuzzyLevel, Math.round(totalCost / (double) EXPERIMENT_TIMES));
         }
-        return false;
+    }
+
+    public void arcScaleableTest() {
+        int[] intermediateNums = {(int) 1e5, 2 * (int) 1e5, 3 * (int) 1e5, 4 * (int) 1e5, 5 * (int) 1e5};
+        int[] queryNums = {(int) 1e3, 2 * (int) 1e3, 3 * (int) 1e3, 4 * (int) 1e3, 5 * (int) 1e3};
+
+        for (int intermediateNum : intermediateNums) {
+            conductArcScaleableTest(intermediateNum, queryNums[0]);
+        }
+
+        log.info("switching to number of queries statistics");
+
+        for (int queryNum : queryNums) {
+            conductArcScaleableTest(intermediateNums[0], queryNum);
+        }
+    }
+
+    private void conductArcScaleableTest(int intermediateNum, int queryNum) {
+        final int N = intermediateNum;
+        long arcTotalCost = 0;
+        long sortedListTotalCost = 0;
+        for (int k = 0; k < EXPERIMENT_TIMES; ++k) {
+            List<IntermediateSearchResult> sortedList = new ArrayList<>(N);
+            final int C = (int) Math.sqrt(N);
+            ArcForest arcForest = new ArcForest(C);
+            for (int i = 0; i < C; ++i) {
+                ArcTree arcTree = new ArcTree(null);
+                for (int j = 0; j < C; ++j) {
+                    MatchGroup matchGroup = new MatchGroup(null, getMonotonicDiameter(0));
+                    ArcTreeLeafNode arcTreeLeafNode = new ArcTreeLeafNode(matchGroup);
+                    IntermediateSearchResult intermediateSearchResult = new IntermediateSearchResult(matchGroup);
+                    arcTree.addLeafNode(arcTreeLeafNode);
+                    sortedList.add(intermediateSearchResult);
+                }
+                arcTree.constructArcTree();
+                arcForest.add(arcTree);
+            }
+            Collections.sort(sortedList);
+
+            for (int i = 0; i < queryNum; ++i) {
+                long startTime = System.nanoTime();
+                if (!arcForest.isRemainCandidate()) {
+                    arcForest.pop();
+                }
+                ArcTree arcTree = arcForest.peek();
+                ArcTreeLeafNode arcTreeLeafNode = arcTree.getBestGroupArcTreeLeafNode();
+                MatchGroup matchGroup1 = arcTreeLeafNode.getMatchGroup();
+                MatchGroup newMatchGroup = new MatchGroup(null, getMonotonicDiameter(matchGroup1.diameter));
+                arcTreeLeafNode.updateMatchGroup(newMatchGroup);
+                arcForest.update(arcTree);
+                arcTotalCost += (System.nanoTime() - startTime) / 1e6;
+
+                startTime = System.nanoTime();
+                IntermediateSearchResult intermediateSearchResult = sortedList.get(0);
+                MatchGroup matchGroup2 = intermediateSearchResult.getMatchGroup();
+                Assert.isTrue(matchGroup1.diameter == matchGroup2.diameter);
+                intermediateSearchResult.setMatchGroup(newMatchGroup);
+                updateSortedList(sortedList);
+                sortedListTotalCost += (System.nanoTime() - startTime) / 1e6;
+            }
+        }
+        arcTotalCost /= EXPERIMENT_TIMES;
+        sortedListTotalCost /= EXPERIMENT_TIMES;
+        Console.log("arcTotalCost: {}, sortedListTotalCost: {}", arcTotalCost, sortedListTotalCost);
+        log.info("{}-{}:{}-{}", intermediateNum / 1e5, queryNum / 1e3, arcTotalCost, sortedListTotalCost);
+    }
+
+    private void updateSortedList(List<IntermediateSearchResult> sortedList) {
+        IntermediateSearchResult updatedResult = sortedList.get(0);
+        for (int i = 1; i < sortedList.size(); ++i) {
+            IntermediateSearchResult cur = sortedList.get(i);
+            if (cur.compareTo(updatedResult) < 0) {
+                sortedList.set(i - 1, cur);
+            } else {
+                sortedList.set(i - 1, updatedResult);
+                return;
+            }
+        }
+        sortedList.set(sortedList.size() - 1, updatedResult);
+    }
+
+    private double getMonotonicDiameter(double cur) {
+        return RandomUtil.randomDouble(cur + 1 / RandomUtil.randomDouble(1e-6, 1e6), Double.MAX_VALUE);
+    }
+
+    @AllArgsConstructor
+    private static class IntermediateSearchResult implements Comparable<IntermediateSearchResult> {
+
+        @Getter
+        @Setter
+        private MatchGroup matchGroup;
+
+        @Override
+        public int compareTo(IntermediateSearchResult o) {
+            return Double.compare(matchGroup.diameter, o.matchGroup.diameter);
+        }
     }
 
     private void indexEfficientTest() {
@@ -601,86 +873,22 @@ public class ExperimentExecutor {
 
     private void switchYelpDataSet() {
         this.dataGraph = ExperimentDataset.switchDataset(Dataset.YELP);
-//        if (!datasets.containsKey(Dataset.YELP)) {
-//            //avoid OutOfMemoryError
-//            GlobalConfig.MAX_READ_LINE = (int) 1e6;
-//            Graph graph = new Graph();
-//            //System.gc();
-//            YelpImporter2 yelpImporter = new YelpImporter2();
-//            yelpImporter.loadDataGraph(graph);
-//            if (GlobalConfig.ENABLE_INDEX) {
-//                graph.constructIndex();
-//            }
-//            datasets.put(Dataset.YELP, graph);
-//        }
-//        this.dataGraph = datasets.get(Dataset.YELP);
     }
 
     private void switchWikiDataSet() {
         this.dataGraph = ExperimentDataset.switchDataset(Dataset.WIKIDATA);
-//        if (!datasets.containsKey(Dataset.WIKIDATA)) {
-//            //avoid OutOfMemoryError
-//            GlobalConfig.MAX_READ_LINE = (int) 1e6;
-//            Graph graph = new Graph();
-//            //System.gc();
-//            WikiImporter wikiImporter = new WikiImporter();
-//            wikiImporter.loadDataGraph(graph);
-//            if (GlobalConfig.ENABLE_INDEX) {
-//                graph.constructIndex();
-//            }
-//            datasets.put(Dataset.WIKIDATA, graph);
-//        }
-//        this.dataGraph = datasets.get(Dataset.WIKIDATA);
     }
 
     private void switchFoursquareDataSet() {
         this.dataGraph = ExperimentDataset.switchDataset(Dataset.FOURSQUARE);
-//        if (!datasets.containsKey(Dataset.FOURSQUARE)) {
-//            //avoid OutOfMemoryError
-//            GlobalConfig.MAX_READ_LINE = (int) 1e6;
-//            Graph graph = new Graph();
-//            //System.gc();
-//            FoursquareImporter foursquareImporter = new FoursquareImporter();
-//            foursquareImporter.loadDataGraph(graph);
-//            if (GlobalConfig.ENABLE_INDEX) {
-//                graph.constructIndex();
-//            }
-//            datasets.put(Dataset.FOURSQUARE, graph);
-//        }
-//        this.dataGraph = datasets.get(Dataset.FOURSQUARE);
     }
 
     private void switchGowallaDataSet() {
         this.dataGraph = ExperimentDataset.switchDataset(Dataset.GOWALLA);
-
-//        if (!datasets.containsKey(Dataset.GOWALLA)) {
-//            GlobalConfig.MAX_READ_LINE = (int) 1e4;
-//            Graph graph = new Graph();
-//            //System.gc();
-//            GowallaImporter gowallaImporter = new GowallaImporter();
-//            gowallaImporter.loadDataGraph(graph);
-//            if (GlobalConfig.ENABLE_INDEX) {
-//                graph.constructIndex();
-//            }
-//            datasets.put(Dataset.GOWALLA, graph);
-//        }
-//        this.dataGraph = datasets.get(Dataset.GOWALLA);
     }
 
     private void switchBrightkiteDataSet() {
         this.dataGraph = ExperimentDataset.switchDataset(Dataset.BRIGHTKITE);
-//        if (!datasets.containsKey(Dataset.BRIGHTKITE)) {
-//            GlobalConfig.MAX_READ_LINE = (int) 1e3;
-//            Graph graph = new Graph();
-//            //System.gc();
-//            BrightkiteImporter brightkiteImporter = new BrightkiteImporter();
-//            brightkiteImporter.loadDataGraph(graph);
-//            if (GlobalConfig.ENABLE_INDEX) {
-//                graph.constructIndex();
-//            }
-//            datasets.put(Dataset.BRIGHTKITE, graph);
-//        }
-//        this.dataGraph = datasets.get(Dataset.BRIGHTKITE);
     }
 
     public void datasetStatistics() {

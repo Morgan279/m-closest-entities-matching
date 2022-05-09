@@ -1,13 +1,14 @@
 package edu.ecnu.aidadblab.processor;
 
-import cn.hutool.core.lang.Console;
 import com.alibaba.fastjson.JSONObject;
 import edu.ecnu.aidadblab.config.GlobalConfig;
+import edu.ecnu.aidadblab.constant.FuzzyLevel;
 import edu.ecnu.aidadblab.constant.IndexType;
 import edu.ecnu.aidadblab.constant.LabelConst;
 import edu.ecnu.aidadblab.data.model.*;
 import edu.ecnu.aidadblab.index.bplustree.BPlusTreeEntry;
 import edu.ecnu.aidadblab.tool.Filter;
+import edu.ecnu.aidadblab.tool.GlobalData;
 import edu.ecnu.aidadblab.util.SpatialUtil;
 import lombok.Getter;
 
@@ -27,7 +28,7 @@ public class FuzzyMatchProcessor {
 
     private Map<Vertex, Boolean> exactMatchCache;
 
-    private Map<CheckCacheKey, Boolean> checkCache = new HashMap<>();
+    private final Map<CheckCacheKey, Boolean> checkCache = new HashMap<>();
 
     private Set<Vertex> visitedGVertex;
 
@@ -39,7 +40,7 @@ public class FuzzyMatchProcessor {
 
     private int QUERY_VERTEX_NUM;
 
-    ExactCheckerProcessor exactCheckerProcessor = new ExactCheckerProcessor();
+    private ExactCheckerProcessor exactCheckerProcessor = new ExactCheckerProcessor();
 
     @Getter
     private FuzzyMatchIntermediate fuzzyMatchIntermediate;
@@ -47,7 +48,9 @@ public class FuzzyMatchProcessor {
     private boolean exactMatchResult;
 
     public FuzzyMatchProcessor(Graph dataGraph, List<Graph> queryGraphs) {
-        if (GlobalConfig.ENABLE_INDEX) {
+        if (GlobalConfig.SCALEABLE_TEST) {
+            this.fuzzyInit(dataGraph, queryGraphs);
+        } else if (GlobalConfig.ENABLE_INDEX) {
             switch (GlobalConfig.INDEX_TYPE) {
                 case IndexType.BLOOM:
                     this.init2(dataGraph, queryGraphs);
@@ -192,6 +195,19 @@ public class FuzzyMatchProcessor {
         return new MatchGroup(solutionVertexes, curMinRadius);
     }
 
+    private void fuzzyInit(Graph dataGraph, List<Graph> queryGraphs) {
+        this.init2(dataGraph, queryGraphs);
+    }
+
+    private Vertex findEntityVertex(Match match) {
+        for (Vertex u : match.getQueryVertexSet()) {
+            if (LabelConst.ENTITY_LABEL.equals(u.label)) {
+                return match.get(u);
+            }
+        }
+        throw new IllegalArgumentException("no entity vertex found");
+    }
+
     private void init(Graph dataGraph, List<Graph> queryGraphs) {
         this.dataGraph = dataGraph;
         this.QUERY_NUM = queryGraphs.size();
@@ -202,12 +218,15 @@ public class FuzzyMatchProcessor {
         this.visitedGVertex = new HashSet<>();
         List<Vertex> vertexList = new ArrayList<>();
         Map<Vertex, List<Integer>> structTagMap = new HashMap<>();
+        int eligibleNum = 0;
         for (Graph queryGraph : queryGraphs) {
             ReduceMap reduceMap = generateReduceMap(queryGraph);
             reduceMaps.add(reduceMap);
             candidateDataEntityVertexes.add(reduceMap.dataEntityVertexes);
+            eligibleNum += reduceMap.dataEntityVertexes.size();
             vertexList.addAll(reduceMap.dataEntityVertexes);
         }
+        GlobalData.PruneNum = dataGraph.adjList.size() - eligibleNum;
         candidateDataEntityVertexes.sort(Comparator.comparingInt(List::size));
         reduceMaps.sort(Comparator.comparingInt(m -> m.dataEntityVertexes.size()));
         for (int i = 0; i < QUERY_NUM; ++i) {
@@ -250,7 +269,6 @@ public class FuzzyMatchProcessor {
                     candidates.add(v);
                 }
             }
-
             candidateDataEntityVertexes.add(candidates);
             reduceMaps.add(new ReduceMap(queryGraph, queryEntity, candidates));
             vertexList.addAll(candidates);
@@ -286,10 +304,15 @@ public class FuzzyMatchProcessor {
             List<Long> hashKeys = queryGraph.getEntityVertexHashKeys(queryEntity);
             BPlusTreeEntry searchEntry = new BPlusTreeEntry(queryGraph.getDegree(queryEntity), queryGraph.getNeighborConnection(queryEntity));
             List<Vertex> candidates = new ArrayList<>();
+            long startTime = System.nanoTime();
             for (Vertex v : dataGraph.bPlusTree.search(searchEntry)) {
                 if (hashValid(hashKeys, dataGraph.bloomIndex.get(v))) {
                     candidates.add(v);
                 }
+            }
+            if (GlobalConfig.TIME_RATIO_TEST) {
+                long endTime = System.nanoTime();
+                GlobalData.FENonSpatialTime += (endTime - startTime) / 1e6;
             }
             candidateDataEntityVertexes.add(candidates);
             reduceMaps.add(new ReduceMap(queryGraph, queryEntity, candidates));
@@ -311,18 +334,14 @@ public class FuzzyMatchProcessor {
     }
 
     private ReduceMap generateReduceMap(Graph queryGraph) {
+        //       long startTime = System.nanoTime();
         Vertex queryEntityVertex = queryGraph.entityVertexes.iterator().next();
         List<Vertex> dataEntityVertexes = new ArrayList<>();
 
-        long startTime = System.currentTimeMillis();
         for (Vertex entityVertex : dataGraph.entityVertexes) {
-            if (checkOneHop(entityVertex, queryEntityVertex, queryGraph, dataGraph)) {
+            if (fuzzyCheck(entityVertex, queryEntityVertex, queryGraph, dataGraph)) {
                 dataEntityVertexes.add(entityVertex);
             }
-        }
-
-        if (GlobalConfig.DEBUG) {
-            Console.log("check one hop cost: {}", System.currentTimeMillis() - startTime);
         }
 
         Graph reduceQueryGraph = queryGraph.clone();
@@ -334,31 +353,142 @@ public class FuzzyMatchProcessor {
             }
         }
 
+//        GlobalData.FENonSpatialTime = (System.nanoTime() - startTime) / 1e6;
         return new ReduceMap(reduceQueryGraph, queryEntityVertex, dataEntityVertexes);
     }
 
-    private boolean checkOneHop(Vertex dataEntity, Vertex queryEntity, Graph queryGraph, Graph dataGraph) {
-        List<Vertex> queryNeighbors = queryGraph.getNeighbors(queryEntity);
-        List<Vertex> dataNeighbors = dataGraph.getNeighbors(dataEntity);
-        if (dataNeighbors.size() < queryNeighbors.size()) return false;
-
-        Set<String> labels = new HashSet<>();
-        Set<String> matched = new HashSet<>();
-        for (Vertex queryNeighbor : queryNeighbors) {
-            labels.add(queryNeighbor.label);
+    private boolean fuzzyCheck(Vertex dataEntity, Vertex queryEntity, Graph queryGraph, Graph dataGraph) {
+        switch (GlobalConfig.FUZZY_LEVEL) {
+            case FuzzyLevel.ONE_HOP:
+                return checkOneHop(dataEntity, queryEntity, queryGraph, dataGraph);
+            case FuzzyLevel.EGO_NETWORK:
+                return checkEgoNetwork(dataEntity, queryEntity, queryGraph, dataGraph);
+            case FuzzyLevel.TWO_HOP:
+                return checkTwoHop(dataEntity, queryEntity, queryGraph, dataGraph);
+            default:
+                throw new RuntimeException("unknown fuzzy level");
         }
-
-        for (Vertex entityNeighbor : dataGraph.getNeighbors(dataEntity)) {
-            if (labels.contains(entityNeighbor.label)) {
-                matched.add(entityNeighbor.label);
-                if (matched.size() == labels.size()) return true;
-            }
-
-        }
-
-        return false;
     }
 
+    private boolean checkOneHop(Vertex dataEntity, Vertex queryEntity, Graph queryGraph, Graph dataGraph) {
+        for (Vertex v : queryGraph.getNeighbors(queryEntity)) {
+            if (findSameLabelDataVertex(dataGraph.getNeighbors(dataEntity), v.label) == null) {
+                return false;
+            }
+        }
+
+        return true;
+//        List<Vertex> queryNeighbors = queryGraph.getNeighbors(queryEntity);
+//        List<Vertex> dataNeighbors = dataGraph.getNeighbors(dataEntity);
+//        if (dataNeighbors.size() < queryNeighbors.size()) return false;
+//
+//        Set<String> labels = new HashSet<>();
+//        Set<String> matched = new HashSet<>();
+//        for (Vertex queryNeighbor : queryNeighbors) {
+//            labels.add(queryNeighbor.label);
+//        }
+//
+//        for (Vertex entityNeighbor : dataGraph.getNeighbors(dataEntity)) {
+//            if (labels.contains(entityNeighbor.label)) {
+//                matched.add(entityNeighbor.label);
+//                if (matched.size() == labels.size()) return true;
+//            }
+//
+//        }
+//
+//        return false;
+    }
+
+    private boolean checkOneHop2(Vertex dataEntity, Vertex queryEntity, Graph queryGraph, Graph dataGraph) {
+        Graph oneHopFuzzyQueryGraph = new Graph();
+        oneHopFuzzyQueryGraph.addVertex(queryEntity);
+        for (Vertex u : queryGraph.getNeighbors(queryEntity)) {
+            oneHopFuzzyQueryGraph.addVertex(u);
+            oneHopFuzzyQueryGraph.addEdge(queryEntity, u);
+        }
+        return exactCheckerProcessor.check(dataEntity, dataGraph, oneHopFuzzyQueryGraph);
+    }
+
+    private boolean checkEgoNetwork(Vertex dataEntity, Vertex queryEntity, Graph queryGraph, Graph dataGraph) {
+        List<Vertex> neighbors = queryGraph.getNeighbors(queryEntity);
+        for (int i = 0; i < neighbors.size(); ++i) {
+            Vertex u = neighbors.get(i);
+            Vertex matchU = findSameLabelDataVertex(dataGraph.getNeighbors(dataEntity), u.label);
+            if (matchU == null) {
+                return false;
+            }
+            for (int j = i + 1; j < neighbors.size(); ++j) {
+                Vertex v = neighbors.get(j);
+                if (queryGraph.hasEdge(u, v)) {
+                    Vertex matchV = findSameLabelDataVertex(dataGraph.getNeighbors(dataEntity), v.label);
+                    if (matchV == null || !dataGraph.hasEdge(matchU, matchV)) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+
+//        Graph egoNetworkFuzzyQueryGraph = new Graph();
+//        egoNetworkFuzzyQueryGraph.addVertex(queryEntity);
+//        for (Vertex u : queryGraph.getNeighbors(queryEntity)) {
+//            egoNetworkFuzzyQueryGraph.addVertex(u);
+//            egoNetworkFuzzyQueryGraph.addEdge(queryEntity, u);
+//            for (Vertex v : queryGraph.getNeighbors(queryEntity)) {
+//                if (!v.equals(u) && queryGraph.hasEdge(u, v)) {
+//                    if (!egoNetworkFuzzyQueryGraph.hasVertex(v)) {
+//                        egoNetworkFuzzyQueryGraph.addVertex(v);
+//                    }
+//                    if (!egoNetworkFuzzyQueryGraph.hasEdge(u, v)) {
+//                        egoNetworkFuzzyQueryGraph.addEdge(u, v);
+//                    }
+//                }
+//            }
+//        }
+//        return exactCheckerProcessor.check(dataEntity, dataGraph, egoNetworkFuzzyQueryGraph);
+    }
+
+    private boolean checkTwoHop(Vertex dataEntity, Vertex queryEntity, Graph queryGraph, Graph dataGraph) {
+        for (Vertex oneHop : queryGraph.getNeighbors(queryEntity)) {
+            Vertex oneHopMatch = findSameLabelDataVertex(dataGraph.getNeighbors(dataEntity), oneHop.label);
+            if (oneHopMatch == null) {
+                return false;
+            }
+            for (Vertex twoHop : queryGraph.getNeighbors(oneHop)) {
+                Vertex twoHopMatch = findSameLabelDataVertex(dataGraph.getNeighbors(oneHopMatch), twoHop.label);
+                if (twoHopMatch == null) {
+                    return false;
+                }
+            }
+        }
+        return true;
+//        Graph twoHopFuzzyQueryGraph = new Graph();
+//        Queue<Vertex> queue = new LinkedList<>();
+//        queue.add(queryEntity);
+//        twoHopFuzzyQueryGraph.addVertex(queue.peek());
+//        int hop = 1;
+//        while (!queue.isEmpty()) {
+//            if (hop > 2) {
+//                break;
+//            }
+//            Vertex v = queue.poll();
+//            for (Vertex u : queryGraph.getNeighbors(v)) {
+//                twoHopFuzzyQueryGraph.addVertex(u);
+//                twoHopFuzzyQueryGraph.addEdge(v, u);
+//            }
+//            ++hop;
+//        }
+//        return exactCheckerProcessor.check(dataEntity, dataGraph, twoHopFuzzyQueryGraph);
+    }
+
+    private Vertex findSameLabelDataVertex(List<Vertex> candidates, String matchLabel) {
+        for (Vertex v : candidates) {
+            if (v.label.equals(matchLabel)) {
+                return v;
+            }
+        }
+        return null;
+    }
 
     private Vertex findNearestEntityVertex(Vertex v, int index) {
         double minDistance = Double.MAX_VALUE;

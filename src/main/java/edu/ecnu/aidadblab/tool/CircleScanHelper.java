@@ -4,6 +4,7 @@ import cn.hutool.core.collection.CollUtil;
 import com.alibaba.fastjson.JSONObject;
 import edu.ecnu.aidadblab.constant.AngleType;
 import edu.ecnu.aidadblab.constant.LocationComponent;
+import edu.ecnu.aidadblab.data.model.Angle;
 import edu.ecnu.aidadblab.data.model.SKECCenter;
 import lombok.NoArgsConstructor;
 
@@ -65,6 +66,29 @@ public class CircleScanHelper {
         }
 
         return CollUtil.newArrayList(skecCenter1, skecCenter2);
+    }
+
+    public static Angle[] getInOutAngle(JSONObject v, JSONObject u, double diameter) {
+        Node a = new Node(v);
+        Node b = new Node(u);
+        double dist = euclideanDistance(a, b);
+        double x = b.x_ - a.x_;
+        double y = b.y_ - a.y_;
+        double baseAngle = Math.atan2(y, x);
+        double alpha = Math.acos(dist / diameter);
+        Angle inAngle = new Angle(AngleType.IN);
+        Angle outAngle = new Angle(AngleType.OUT);
+        inAngle.angleDegree = normalizeAngle(baseAngle - alpha);
+        outAngle.angleDegree = normalizeAngle(baseAngle + alpha);
+        return new Angle[]{inAngle, outAngle};
+    }
+
+    private static double normalizeAngle(double angle) {
+        while (angle < 0)
+            angle += 2 * Math.PI;
+        while (angle > Math.PI * 2)
+            angle -= 2 * Math.PI;
+        return angle;
     }
 
     public static int compareAngle(JSONObject v, JSONObject u1, JSONObject u2) {

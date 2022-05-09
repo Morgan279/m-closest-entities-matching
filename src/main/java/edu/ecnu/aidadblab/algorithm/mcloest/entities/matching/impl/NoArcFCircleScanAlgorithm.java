@@ -5,22 +5,23 @@ import com.alibaba.fastjson.JSONObject;
 import edu.ecnu.aidadblab.algorithm.mcloest.entities.matching.MClosestEntitiesMatchingAlgorithm;
 import edu.ecnu.aidadblab.constant.AngleType;
 import edu.ecnu.aidadblab.data.model.*;
-import edu.ecnu.aidadblab.index.arcforest.ArcForest;
-import edu.ecnu.aidadblab.index.arctree.ArcTree;
-import edu.ecnu.aidadblab.index.arctree.ArcTreeLeafNode;
 import edu.ecnu.aidadblab.processor.FuzzyMatchProcessor;
 import edu.ecnu.aidadblab.tool.CircleScanHelper;
 import edu.ecnu.aidadblab.util.SpatialUtil;
+import lombok.AllArgsConstructor;
+import lombok.Getter;
 
 import java.util.*;
 
-public class FCircleScanAlgorithm implements MClosestEntitiesMatchingAlgorithm {
+public class NoArcFCircleScanAlgorithm implements MClosestEntitiesMatchingAlgorithm {
 
     private double S;
 
     private double feasibleS;
 
     private List<Vertex> vertexList;
+
+    private List<IntermediateSearchResult> intermediateSearchResults;
 
     private Map<Vertex, JSONObject> locationMap;
 
@@ -29,8 +30,6 @@ public class FCircleScanAlgorithm implements MClosestEntitiesMatchingAlgorithm {
     private int QUERY_NUM;
 
     private FuzzyMatchProcessor fuzzyMatchProcessor;
-
-    private ArcForest arcForest;
 
     @Override
     public MatchGroup query(Graph dataGraph, List<Graph> queryGraphs) {
@@ -47,7 +46,8 @@ public class FCircleScanAlgorithm implements MClosestEntitiesMatchingAlgorithm {
         vertexList = fuzzyMatchIntermediate.vertexList;
         structTagMap = fuzzyMatchIntermediate.structTagMap;
         feasibleS = 2 / Math.sqrt(3) * feasibleGroup.diameter;
-        this.arcForest = new ArcForest(vertexList.size());
+        this.intermediateSearchResults = new ArrayList<>();
+
 
         for (int i = 0; i < vertexList.size(); ++i) {
             MatchGroup matchGroup = exactCircleScan(vertexList.get(i), feasibleS, i);
@@ -56,27 +56,22 @@ public class FCircleScanAlgorithm implements MClosestEntitiesMatchingAlgorithm {
             }
         }
 
-        //long startTime = System.currentTimeMillis();
+        long startTime = System.currentTimeMillis();
+        Collections.sort(intermediateSearchResults);
         MatchGroup ans = findBestExactMatch();
-        //System.out.println("Arc search cost: " + (System.currentTimeMillis() - startTime));
+        System.out.println("sorted list backtrack cost: " + (System.currentTimeMillis() - startTime));
         return ans;
+
         //return findBestExactMatch();
     }
 
     private MatchGroup findBestExactMatch() {
-        while (arcForest.isRemainCandidate()) {
-            ArcTree arcTree = arcForest.peek();
-            if (!arcTree.isRemainCandidates()) {
-                arcForest.pop();
-                continue;
-            }
-            ArcTreeLeafNode bestGroupArcTreeLeafNode = arcTree.getBestGroupArcTreeLeafNode();
-            MatchGroup bestGroup = bestGroupArcTreeLeafNode.getMatchGroup();
+        while (!intermediateSearchResults.isEmpty()) {
+            MatchGroup bestGroup = intermediateSearchResults.get(0).getMatchGroup();
             boolean validate = true;
-
             for (int i = 0; i < QUERY_NUM; ++i) {
                 if (!fuzzyMatchProcessor.checkExact(bestGroup.entityMap.get(i), i)) {
-                    updateWhenMatchFailed(bestGroup.entityMap.get(i), i, arcTree, bestGroupArcTreeLeafNode);
+                    updateWhenMatchFailed(bestGroup.entityMap.get(i), i);
                     validate = false;
                     break;
                 }
@@ -91,30 +86,46 @@ public class FCircleScanAlgorithm implements MClosestEntitiesMatchingAlgorithm {
     }
 
 
-    private void updateWhenMatchFailed(Vertex notMatchVertex, int notMatchTag, ArcTree arcTree, ArcTreeLeafNode bestGroupArcTreeLeafNode) {
-        if (bestGroupArcTreeLeafNode.getTab()[notMatchTag] == 1) {
-            bestGroupArcTreeLeafNode.delete();
+    private void updateWhenMatchFailed(Vertex notMatchVertex, int notMatchTag) {
+        IntermediateSearchResult notMatchIntermediateSearchResult = intermediateSearchResults.get(0);
+        if (notMatchIntermediateSearchResult.getTab()[notMatchTag] == 1) {
+            intermediateSearchResults.remove(0);
         } else {
-            --bestGroupArcTreeLeafNode.getTab()[notMatchTag];
+            --notMatchIntermediateSearchResult.getTab()[notMatchTag];
             structTagMap.get(notMatchVertex).remove(Integer.valueOf(notMatchTag));
             List<Vertex> selected = new ArrayList<>(QUERY_NUM);
             Map<Integer, Vertex> entityMap = new HashMap<>(QUERY_NUM);
-            for (int tag : structTagMap.get(arcTree.centerVertex)) {
-                selected.add(arcTree.centerVertex);
-                entityMap.put(tag, arcTree.centerVertex);
+            for (int tag : structTagMap.get(notMatchIntermediateSearchResult.centerVertex)) {
+                selected.add(notMatchIntermediateSearchResult.centerVertex);
+                entityMap.put(tag, notMatchIntermediateSearchResult.centerVertex);
             }
-            MatchGroup newMatchGroup = doExhaustiveSearch(selected, bestGroupArcTreeLeafNode.getCoverVertex(), entityMap);
+            MatchGroup newMatchGroup = doExhaustiveSearch(selected, notMatchIntermediateSearchResult.getCoverVertex(), entityMap);
+
             if (CollUtil.isEmpty(newMatchGroup.matchVertex)) {
-                bestGroupArcTreeLeafNode.delete();
+                intermediateSearchResults.remove(0);
             } else {
-                bestGroupArcTreeLeafNode.updateMatchGroup(newMatchGroup);
+                notMatchIntermediateSearchResult.matchGroup = newMatchGroup;
+                Collections.sort(intermediateSearchResults);
+                //reorderIntermediateSearchResults();
             }
         }
-        arcForest.update(arcTree);
+    }
+
+    private void reorderIntermediateSearchResults() {
+        IntermediateSearchResult updatedResult = intermediateSearchResults.get(0);
+        for (int i = 1; i < intermediateSearchResults.size(); ++i) {
+            IntermediateSearchResult cur = intermediateSearchResults.get(i);
+            if (cur.compareTo(updatedResult) < 0) {
+                intermediateSearchResults.set(i - 1, cur);
+            } else {
+                intermediateSearchResults.set(i - 1, updatedResult);
+                return;
+            }
+        }
+        intermediateSearchResults.set(intermediateSearchResults.size() - 1, updatedResult);
     }
 
     private MatchGroup exactCircleScan(Vertex v, double upperbound, int index) {
-        ArcTree arcTree = new ArcTree(v);
         List<Vertex> selected = new ArrayList<>();
         Map<Integer, Vertex> entityMap = new HashMap<>(QUERY_NUM);
         int[] fuzzyGroup = new int[QUERY_NUM];
@@ -161,13 +172,12 @@ public class FCircleScanAlgorithm implements MClosestEntitiesMatchingAlgorithm {
                 }
             } else {
                 if (checkFuzzyGroup(fuzzyGroup)) {
-
                     MatchGroup matchGroup = doExhaustiveSearch(selected, coverVertex, entityMap);
                     if (CollUtil.isNotEmpty(matchGroup.matchVertex)) {
                         if (matchGroup.diameter == 0) {
                             return matchGroup;
                         }
-                        arcTree.addLeafNode(new ArcTreeLeafNode(circleScanItem, matchGroup, new HashSet<>(coverVertex), Arrays.copyOf(fuzzyGroup, fuzzyGroup.length)));
+                        intermediateSearchResults.add(new IntermediateSearchResult(Arrays.copyOf(fuzzyGroup, fuzzyGroup.length), new HashSet<>(coverVertex), matchGroup, v));
                     }
                 }
                 coverVertex.remove(circleScanItem.vertex);
@@ -177,10 +187,6 @@ public class FCircleScanAlgorithm implements MClosestEntitiesMatchingAlgorithm {
             }
         }
 
-        arcTree.constructArcTree();
-        if (arcTree.isRemainCandidates()) {
-            arcForest.add(arcTree);
-        }
         return null;
     }
 
@@ -276,5 +282,26 @@ public class FCircleScanAlgorithm implements MClosestEntitiesMatchingAlgorithm {
 
     private double calculateDistance(Vertex v1, Vertex v2) {
         return SpatialUtil.calculateDistance(locationMap.get(v1), locationMap.get(v2));
+    }
+
+    @AllArgsConstructor
+    private static class IntermediateSearchResult implements Comparable<IntermediateSearchResult> {
+
+        @Getter
+        private int[] tab;
+
+        @Getter
+        private Set<Vertex> coverVertex;
+
+        @Getter
+        private MatchGroup matchGroup;
+
+        @Getter
+        private Vertex centerVertex;
+
+        @Override
+        public int compareTo(IntermediateSearchResult o) {
+            return Double.compare(matchGroup.diameter, o.matchGroup.diameter);
+        }
     }
 }

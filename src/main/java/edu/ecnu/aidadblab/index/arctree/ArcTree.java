@@ -56,17 +56,11 @@ public class ArcTree {
 
     private ArcTreeLeafNode findBestGroupLeafNode(ArcTreeNode curNode) {
         if (curNode.isLeafNode()) return (ArcTreeLeafNode) curNode;
-        //Console.log("root: {},cur:{} parent: {} | {} : {}", root, curNode, curNode.getParent(), curNode.getLeftChild(), curNode.getRightChild());
-//        if (curNode.getLeftChild() == null || curNode.getLeftChild().isDeleted()) {
-//            return findBestGroupLeafNode(curNode.getRightChild());
-//        }
+        
         if (curNode.getLeftChild() == null) {
             return findBestGroupLeafNode(curNode.getRightChild());
         }
 
-//        if (curNode.getRightChild() == null || curNode.getRightChild().isDeleted()) {
-//            return findBestGroupLeafNode(curNode.getLeftChild());
-//        }
         if (curNode.getRightChild() == null) {
             return findBestGroupLeafNode(curNode.getLeftChild());
         }

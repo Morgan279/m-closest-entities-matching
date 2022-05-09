@@ -6,6 +6,7 @@ import edu.ecnu.aidadblab.algorithm.mcloest.entities.matching.MClosestEntitiesMa
 import edu.ecnu.aidadblab.algorithm.mcloest.entities.matching.impl.ExactEnumAlgorithm;
 import edu.ecnu.aidadblab.algorithm.mcloest.entities.matching.impl.ExactScanAlgorithm;
 import edu.ecnu.aidadblab.algorithm.mcloest.entities.matching.impl.FCircleScanAlgorithm;
+import edu.ecnu.aidadblab.algorithm.mcloest.entities.matching.impl.NoArcFCircleScanAlgorithm;
 import edu.ecnu.aidadblab.config.GlobalConfig;
 import edu.ecnu.aidadblab.constant.LabelConst;
 import edu.ecnu.aidadblab.constant.LocationComponent;
@@ -16,12 +17,12 @@ import edu.ecnu.aidadblab.importer.YelpImporter;
 import edu.ecnu.aidadblab.processor.ExactCheckerProcessor;
 import edu.ecnu.aidadblab.processor.FuzzyMatchProcessor;
 import edu.ecnu.aidadblab.tool.GlobalData;
-import io.netty.util.internal.ThreadLocalRandom;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ThreadLocalRandom;
 
 public class CorrectnessTest {
 
@@ -49,15 +50,19 @@ public class CorrectnessTest {
     @Test
     public void F2ECorrectnessTest() {
         GlobalConfig.DEBUG = false;
+        GlobalConfig.ENABLE_INDEX = false;
         MClosestEntitiesMatchingAlgorithm F2E = new FCircleScanAlgorithm();
+        MClosestEntitiesMatchingAlgorithm NoArcF2E = new NoArcFCircleScanAlgorithm();
         for (int i = 1; i <= 1000; ++i) {
             Graph dataGraph = generateRandomDataGraph(ThreadLocalRandom.current().nextInt(10, 30));
-            dataGraph.constructIndex();
             List<Graph> queryGraphs = generateRandomQueryGraph(dataGraph);
-            MatchGroup F2EResult = F2E.query(dataGraph, queryGraphs);
             MatchGroup exactEnumResult = exactEnum.query(dataGraph, queryGraphs);
-            Assertions.assertEquals(exactEnumResult.matchVertex, F2EResult.matchVertex);
+            MatchGroup F2EResult = F2E.query(dataGraph, queryGraphs);
+            MatchGroup NoArcF2EResult = NoArcF2E.query(dataGraph, queryGraphs);
+            Assertions.assertEquals(exactEnumResult.diameter, F2EResult.diameter);
             Assertions.assertEquals(exactEnumResult.matchVertex.size(), F2EResult.matchVertex.size());
+            Assertions.assertEquals(exactEnumResult.diameter, NoArcF2EResult.diameter);
+            Assertions.assertEquals(exactEnumResult.matchVertex.size(), NoArcF2EResult.matchVertex.size());
         }
     }
 
@@ -71,7 +76,7 @@ public class CorrectnessTest {
             Assertions.assertEquals(exactEnum.query(dataGraph, queryGraphs).matchVertex.size(), exactEnum.query(dataGraph, queryGraphs).matchVertex.size());
         }
     }
-    
+
 
     @Test
     public void exactMatchTest() {

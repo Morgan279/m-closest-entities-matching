@@ -8,7 +8,7 @@ public class EntryPoint {
     public static void main(String[] args) {
         GlobalConfig.datasetDir = GlobalConfig.REMOTE_DATASET_DIR;
         ExperimentExecutor experimentExecutor = new ExperimentExecutor();
-        experimentExecutor.effective();
+        experimentExecutor.fuzzyLevelTest();
     }
 
 
